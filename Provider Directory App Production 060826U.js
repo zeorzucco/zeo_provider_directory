@@ -1,4 +1,3 @@
-<script>
   let CONFIG = {
       zipLookupUrl: "https://cdn.prod.website-files.com/68348ae3afc011c49c02e2b1/69715127417a25050cdefa0b_fl_zips.txt",
       googleMapsApiKey: "AIzaSyBKchVbGjHCgv54VaEU_FDj3X6ooGHTMVA",
@@ -949,4 +948,3 @@ async function init(){
       console.error(e), alert("Failed to initialize directory. Check console for details.")
     })
   });
-</script>
