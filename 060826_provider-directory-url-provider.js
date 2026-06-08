@@ -37,6 +37,7 @@ let CONFIG = {
   },
   specialtyNameById = {},
   zipLookup = {},
+  zipLookupLoaded = !1,
   floridaCitySet = null,
   floridaCityCentroids = null;
 
@@ -70,7 +71,7 @@ function ensureFloridaCitySet() {
 }
 
 function isFloridaCityName(e) {
-  return ensureFloridaCitySet(), !floridaCitySet || 0 === floridaCitySet.size || floridaCitySet.has(normalizeCity(e))
+  return ensureFloridaCitySet(), !!floridaCitySet && 0 < floridaCitySet.size && floridaCitySet.has(normalizeCity(e))
 }
 let typeaheadItems = [],
   selectedTerm = null,
@@ -150,6 +151,22 @@ function hrefFrom(e) {
 
 function imgSrcFrom(e) {
   return (e = e && ("IMG" === e.tagName ? e : e.querySelector("img"))) ? (e.getAttribute("src") || "").trim() : ""
+}
+
+function safeHttpUrl(e) {
+  var t = String(e || "").trim();
+  if (!t) return "";
+  /^[a-z][a-z0-9+.-]*:/i.test(t) || (t = "https://" + t);
+  try {
+    var r = new URL(t, window.location.origin);
+    return "http:" === r.protocol || "https:" === r.protocol ? r.href : ""
+  } catch (e) {
+    return ""
+  }
+}
+
+function cssEscape(e) {
+  return window.CSS && "function" == typeof window.CSS.escape ? window.CSS.escape(String(e)) : String(e).replace(/["\\]/g, "\\$&")
 }
 
 function getCardImageUrl(e) {
@@ -248,9 +265,9 @@ async function loadData() {
     });
     if (!e.ok) throw new Error("ZIP lookup failed");
     var t = await e.text();
-    zipLookup = JSON.parse(t)
+    zipLookup = JSON.parse(t), zipLookupLoaded = !!(zipLookup && zipLookup.z && zipLookup.c)
   } catch (e) {
-    zipLookup = {}
+    zipLookup = {}, zipLookupLoaded = !1
   }
   floridaCitySet = null, floridaCityCentroids = null, catalog.procedures = Array.from(document.querySelectorAll(".cms-procedures .w-dyn-item")).map(e => ({
     id: textFrom(e.querySelector("._wf-proc-id")),
@@ -281,14 +298,14 @@ async function loadData() {
       PracticeName: textFrom(e.querySelector("._wf-practice")),
       Phone: textFrom(e.querySelector("._wf-phone")),
       ProviderEmail: textFrom(e.querySelector("._wf-email")),
-      Website: hrefFrom(e.querySelector("._wf-website")) || textFrom(e.querySelector("._wf-website")),
+      Website: safeHttpUrl(hrefFrom(e.querySelector("._wf-website")) || textFrom(e.querySelector("._wf-website"))),
       AddressLine1: textFrom(e.querySelector("._wf-address1")),
       City: textFrom(e.querySelector("._wf-city")),
       State: textFrom(e.querySelector("._wf-state")),
       ZIP: textFrom(e.querySelector("._wf-zip")),
       lat: Number.isFinite(t) ? t : null,
       lng: Number.isFinite(r) ? r : null,
-      google_maps_url: hrefFrom(e.querySelector("._wf-maps-url")) || textFrom(e.querySelector("._wf-maps-url")),
+      google_maps_url: safeHttpUrl(hrefFrom(e.querySelector("._wf-maps-url")) || textFrom(e.querySelector("._wf-maps-url"))),
       HighlightText: textFrom(e.querySelector("._wf-highlight")),
       LogoUrl: imgSrcFrom(e.querySelector("._wf-logo")),
       DoctorPhotoUrl: imgSrcFrom(e.querySelector("._wf-photo")),
@@ -370,19 +387,29 @@ function resolveFloridaLocation(e) {
   var t, r, a, o, e = normalizeStr(e);
   return isZip(e) ? (t = zipLookup?.z?.[e], Array.isArray(t) && !(t.length < 3) && (r = "number" == typeof zipLookup?.s ? zipLookup.s : 1e4, a = "number" == typeof(a = t[0]) && zipLookup?.c?.[a] || "") ? (o = "number" == typeof t[1] ? t[1] / r : null, t = "number" == typeof t[2] ? t[2] / r : null, {
     mode: "zip",
+    recognized: !0,
     input: e,
     city: normalizeCity(a),
     displayCity: toTitleCase(a),
     state: "FL",
     lat: o,
     lng: t
-  }) : null) : (r = toTitleCase(e), a = normalizeCity(e), ensureFloridaCityCentroids(), {
+  }) : {
+    mode: "zip",
+    recognized: !1,
+    input: e,
+    displayCity: e,
+    state: "FL",
+    lat: null,
+    lng: null
+  }) : (r = toTitleCase(e), a = normalizeCity(e), ensureFloridaCityCentroids(), o = floridaCityCentroids ? floridaCityCentroids.get(a) : null, {
     mode: "city",
+    recognized: isFloridaCityName(e),
     input: e,
     city: a,
     displayCity: r,
     state: "FL",
-    lat: (o = floridaCityCentroids ? floridaCityCentroids.get(a) : null) ? o.lat : null,
+    lat: o ? o.lat : null,
     lng: o ? o.lng : null
   })
 }
@@ -397,7 +424,7 @@ function milesBetween(e, t, r, a) {
 
 function filterProviders() {
   let a = resolveFloridaLocation(normalizeStr(els.locInput.value));
-  if (!a) return [];
+  if (!a || !a.recognized) return [];
   let t = new Set((CONFIG.allowedStates || []).map(e => String(e).toUpperCase()));
   var e = catalog.providers.filter(e => !0 === e.Active && t.has(String(e.State || "").toUpperCase())).filter(e => !!selectedTerm && ("procedure" === selectedTerm.type ? Array.isArray(e.procedure_ids) && e.procedure_ids.includes(selectedTerm.id) : "specialty" === selectedTerm.type && Array.isArray(e.specialty_ids) && e.specialty_ids.includes(selectedTerm.id)));
   let r = Number(CONFIG.radiusMiles) || 20,
@@ -471,7 +498,7 @@ function setActiveCard(t) {
 }
 
 function scrollCardIntoView(e) {
-  e = els.listPane.querySelector(`.card[data-provider-id="${e}"]`);
+  e = els.listPane.querySelector(`.card[data-provider-id="${cssEscape(e)}"]`);
   e && e.scrollIntoView({
     behavior: "smooth",
     block: "nearest"
@@ -677,16 +704,16 @@ async function runSearch() {
     filteredProviders = filterProviders(), z_track("directory_search_submit", {
       ...z_ctx(),
       loc_mode: t?.mode || "",
-      loc_recognized: t ? 1 : 0
+      loc_recognized: t?.recognized ? 1 : 0
     }), z_track("directory_search_results", {
       ...z_ctx(),
       loc_mode: t?.mode || "",
-      loc_recognized: t ? 1 : 0,
+      loc_recognized: t?.recognized ? 1 : 0,
       results_count: filteredProviders.length
     }), 0 === filteredProviders.length && z_track("directory_search_zero_results", {
       ...z_ctx(),
       loc_mode: t?.mode || "",
-      loc_recognized: t ? 1 : 0
+      loc_recognized: t?.recognized ? 1 : 0
     }), showResultsSection(), filteredProviders.length ? (setMapVisibility(!0), await initMapIfNeeded(), t && "zip" === t.mode && t.lat && t.lng && (map.setCenter({
       lat: t.lat,
       lng: t.lng
@@ -694,20 +721,23 @@ async function runSearch() {
       searchRunId === e && google.maps.event.trigger(map, "resize")
     }, 100)) : (setMapVisibility(!1), clearMarkers()), renderResults(!0), els.searchMeta.classList.remove("hidden");
     var r, a = Array.isArray(CONFIG.allowedStates) && 1 === CONFIG.allowedStates.length && "FL" === String(CONFIG.allowedStates[0]).toUpperCase();
-    t ? (r = toTitleCase(els.locInput.value), r = "zip" === t.mode || isFloridaCityName(r) ? "" + t.displayCity : r, a && "city" === t.mode && !isFloridaCityName(a = toTitleCase(els.locInput.value)) && (els.searchMeta.textContent = `Right now this directory is Florida-only. "${a}" doesn’t look like a Florida location. Try a Florida city or ZIP.`), 0 === filteredProviders.length ? els.searchMeta.textContent = `No matches within ${CONFIG.radiusMiles||20} miles of ${r}.` : filteredProviders.some(e => normalizeCity(e.City) === t.city) ? els.searchMeta.textContent = `Searching for: ${selectedTerm.name} within ${CONFIG.radiusMiles||20} miles of ` + r : els.searchMeta.textContent.startsWith("Right now this directory is Florida-only.") || (a = formatTermForMeta(selectedTerm), els.searchMeta.textContent = `No providers within ${CONFIG.radiusMiles||20} miles of ${r} yet. Showing ${a} in Florida.`)) : els.searchMeta.textContent = "ZIP not recognized in Florida yet. Try a Florida city."
+    t ? t.recognized ? (r = "" + t.displayCity, 0 === filteredProviders.length ? els.searchMeta.textContent = `No matches within ${CONFIG.radiusMiles||20} miles of ${r}.` : filteredProviders.some(e => normalizeCity(e.City) === t.city) ? els.searchMeta.textContent = `Searching for: ${selectedTerm.name} within ${CONFIG.radiusMiles||20} miles of ` + r : (a = formatTermForMeta(selectedTerm), els.searchMeta.textContent = `No providers within ${CONFIG.radiusMiles||20} miles of ${r} yet. Showing ${a} in Florida.`)) : "zip" === t.mode ? els.searchMeta.textContent = "ZIP not recognized in Florida yet. Try a Florida city or ZIP." : els.searchMeta.textContent = `Right now this directory is Florida-only. "${t.displayCity}" doesn’t look like a Florida location. Try a Florida city or ZIP.` : els.searchMeta.textContent = zipLookupLoaded ? "Location not recognized. Try a Florida city or ZIP." : "Location data is temporarily unavailable. Try again shortly."
   }
 }
 
 function setMobileView(e) {
-  var t = window.matchMedia("(max-width: 768px)").matches;
-  if (t && "map" === e && (savedWindowScrollY = window.scrollY || 0, document.body.style.position = "fixed", document.body.style.top = `-${savedWindowScrollY}px`, document.body.style.left = "0", document.body.style.right = "0", document.body.style.width = "100%"), t && "list" === e) {
-    t = document.body.style.top;
+  var t = window.matchMedia("(max-width: 768px)").matches,
+    r = document.body.classList.contains("mobile-view--map");
+  t && "map" === e && !r && (savedWindowScrollY = window.scrollY || 0, document.body.style.position = "fixed", document.body.style.top = `-${savedWindowScrollY}px`, document.body.style.left = "0", document.body.style.right = "0", document.body.style.width = "100%");
+  if (t && "list" === e && r) {
+    r = document.body.style.top;
     document.body.style.position = "", document.body.style.top = "", document.body.style.left = "", document.body.style.right = "", document.body.style.width = "";
-    let e = t ? Math.abs(parseInt(t, 10)) : savedWindowScrollY;
+    let e = r ? Math.abs(parseInt(r, 10)) : savedWindowScrollY;
     requestAnimationFrame(() => {
       window.scrollTo(0, e || 0)
     })
   }
+  t || (document.body.style.position = "", document.body.style.top = "", document.body.style.left = "", document.body.style.right = "", document.body.style.width = "");
   isMobileMapView = "map" === e, document.body.classList.toggle("mobile-view--list", "list" === e), document.body.classList.toggle("mobile-view--map", "map" === e);
   t = document.getElementById("mobileViewToggle");
   t && (t.textContent = "map" === e ? "List" : "Map"), "map" === e && map && window.google?.maps && setTimeout(() => {
@@ -716,9 +746,12 @@ function setMobileView(e) {
 }
 
 function initMobileViewToggle() {
-  var e = document.getElementById("mobileViewToggle");
-  e && window.matchMedia("(max-width: 768px)").matches && (setMobileView("list"), e.addEventListener("click", () => {
+  var e = document.getElementById("mobileViewToggle"),
+    t = window.matchMedia("(max-width: 768px)");
+  e && (t.matches && setMobileView("list"), e.addEventListener("click", () => {
     setMobileView(document.body.classList.contains("mobile-view--map") ? "list" : "map")
+  }), t.addEventListener("change", e => {
+    e.matches ? document.body.classList.contains("mobile-view--map") || setMobileView("list") : setMobileView("list")
   }))
 }
 
