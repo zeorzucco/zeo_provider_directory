@@ -641,6 +641,10 @@ function focusProviderOnMap(e) {
   }))
 }
 
+function ensureModalMountedToBody() {
+  els.modalOverlay && els.modalOverlay.parentElement !== document.body && document.body.appendChild(els.modalOverlay)
+}
+
 function openJotformModal(e) {
   z_track("provider_request_appointment_click", z_ctx(e));
   var t = normalizeStr(els.locInput.value),
@@ -662,7 +666,7 @@ function openJotformModal(e) {
       embed: "1"
     }),
     t = CONFIG.jotformBaseUrl + "?" + e.toString();
-  els.jotformFrame.src = t, els.modalOverlay.classList.remove("hidden"), els.modalOverlay.setAttribute("aria-hidden", "false"), document.body.style.overflow = "hidden"
+  ensureModalMountedToBody(), els.jotformFrame.src = t, els.modalOverlay.classList.remove("hidden"), els.modalOverlay.setAttribute("aria-hidden", "false"), document.body.style.overflow = "hidden"
 }
 
 function closeModal() {
