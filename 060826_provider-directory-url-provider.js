@@ -356,10 +356,12 @@ function clearSelectionIfUserEdited() {
   selectedTerm && e !== lastCommittedTermValue && (selectedTerm = null)
 }
 
+function hasLocationInput() {
+  return 0 < normalizeStr(els.locInput.value).length
+}
+
 function validateSearchButton() {
-  var e = normalizeStr(els.locInput.value),
-    e = Boolean(selectedTerm) && 0 < e.length;
-  els.searchBtn.disabled = !e
+  els.searchBtn.disabled = !selectedTerm
 }
 
 function updateClearButtons() {
@@ -423,13 +425,13 @@ function milesBetween(e, t, r, a) {
 }
 
 function filterProviders() {
-  let a = resolveFloridaLocation(normalizeStr(els.locInput.value));
-  if (!a || !a.recognized) return [];
+  let a = hasLocationInput() ? resolveFloridaLocation(normalizeStr(els.locInput.value)) : null;
+  if (a && !a.recognized) return [];
   let t = new Set((CONFIG.allowedStates || []).map(e => String(e).toUpperCase()));
   var e = catalog.providers.filter(e => !0 === e.Active && t.has(String(e.State || "").toUpperCase())).filter(e => !!selectedTerm && ("procedure" === selectedTerm.type ? Array.isArray(e.procedure_ids) && e.procedure_ids.includes(selectedTerm.id) : "specialty" === selectedTerm.type && Array.isArray(e.specialty_ids) && e.specialty_ids.includes(selectedTerm.id)));
   let r = Number(CONFIG.radiusMiles) || 20,
     o = [];
-  return 0 < (o = Number.isFinite(a.lat) && Number.isFinite(a.lng) ? e.map(e => {
+  return 0 < (o = a && Number.isFinite(a.lat) && Number.isFinite(a.lng) ? e.map(e => {
     var t = Number(e.lat),
       r = Number(e.lng);
     return Number.isFinite(t) && Number.isFinite(r) ? (t = milesBetween(a.lat, a.lng, t, r), {
@@ -704,7 +706,7 @@ async function runSearch() {
   els.searchMeta.textContent = "", els.searchMeta.classList.add("hidden"), clearSelectionIfUserEdited(), showTermErrorIfNeeded(), validateSearchButton();
   let e = ++searchRunId;
   if (activeProviderId = null, pendingFitProviders = null, renderedCount = 0, els.listPane.innerHTML = "", clearMarkers(), selectedTerm) {
-    let t = resolveFloridaLocation(normalizeStr(els.locInput.value));
+    let t = hasLocationInput() ? resolveFloridaLocation(normalizeStr(els.locInput.value)) : null;
     filteredProviders = filterProviders(), z_track("directory_search_submit", {
       ...z_ctx(),
       loc_mode: t?.mode || "",
@@ -725,7 +727,7 @@ async function runSearch() {
       searchRunId === e && google.maps.event.trigger(map, "resize")
     }, 100)) : (setMapVisibility(!1), clearMarkers()), renderResults(!0), els.searchMeta.classList.remove("hidden");
     var r, a = Array.isArray(CONFIG.allowedStates) && 1 === CONFIG.allowedStates.length && "FL" === String(CONFIG.allowedStates[0]).toUpperCase();
-    t ? t.recognized ? (r = "" + t.displayCity, 0 === filteredProviders.length ? els.searchMeta.textContent = `No matches within ${CONFIG.radiusMiles||20} miles of ${r}.` : filteredProviders.some(e => normalizeCity(e.City) === t.city) ? els.searchMeta.textContent = `Searching for: ${selectedTerm.name} within ${CONFIG.radiusMiles||20} miles of ` + r : (a = formatTermForMeta(selectedTerm), els.searchMeta.textContent = `No providers within ${CONFIG.radiusMiles||20} miles of ${r} yet. Showing ${a} in Florida.`)) : "zip" === t.mode ? els.searchMeta.textContent = "ZIP not recognized in Florida yet. Try a Florida city or ZIP." : els.searchMeta.textContent = `Right now this directory is Florida-only. "${t.displayCity}" doesn’t look like a Florida location. Try a Florida city or ZIP.` : els.searchMeta.textContent = zipLookupLoaded ? "Location not recognized. Try a Florida city or ZIP." : "Location data is temporarily unavailable. Try again shortly."
+    t ? t.recognized ? (r = "" + t.displayCity, 0 === filteredProviders.length ? els.searchMeta.textContent = `No matches within ${CONFIG.radiusMiles||20} miles of ${r}.` : filteredProviders.some(e => normalizeCity(e.City) === t.city) ? els.searchMeta.textContent = `Searching for: ${selectedTerm.name} within ${CONFIG.radiusMiles||20} miles of ` + r : (a = formatTermForMeta(selectedTerm), els.searchMeta.textContent = `No providers within ${CONFIG.radiusMiles||20} miles of ${r} yet. Showing ${a} in Florida.`)) : "zip" === t.mode ? els.searchMeta.textContent = "ZIP not recognized in Florida yet. Try a Florida city or ZIP." : els.searchMeta.textContent = `Right now this directory is Florida-only. "${t.displayCity}" doesn’t look like a Florida location. Try a Florida city or ZIP.` : els.searchMeta.textContent = 0 === filteredProviders.length ? `No matching ${formatTermForMeta(selectedTerm)} found in Florida yet.` : `Showing ${formatTermForMeta(selectedTerm)} in Florida. Add a city or ZIP to narrow the results.`
   }
 }
 
@@ -805,7 +807,7 @@ function wireEvents() {
   })
 }
 async function init() {
-  await loadData(), wireEvents(), initMobileViewToggle(), validateSearchButton(), updateClearButtons(), await showProviderFromUrl()
+  els.locInput && (els.locInput.placeholder = "City or ZIP (optional)"), await loadData(), wireEvents(), initMobileViewToggle(), validateSearchButton(), updateClearButtons(), await showProviderFromUrl()
 }
 window.Webflow = window.Webflow || [], window.Webflow.push(() => {
   init().catch(e => {
