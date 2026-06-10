@@ -692,6 +692,7 @@ body {
     position: sticky;
     top: 0;
     z-index: 80;
+    border-radius: 16px 16px 0 0;
     background: var(--panel);
     border-bottom: 1px solid var(--border);
     padding-top: calc(12px + env(safe-area-inset-top))
