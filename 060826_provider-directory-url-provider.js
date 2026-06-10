@@ -333,9 +333,11 @@ function showSuggestions(e, o = -1) {
     var r = document.createElement("div"),
       e = (r.className = "suggestion", r.setAttribute("role", "option"), r.setAttribute("data-id", t.id), r.setAttribute("data-type", t.type), r.setAttribute("aria-selected", e === o ? "true" : "false"), document.createElement("div")),
       a = (e.className = "suggestion__name", e.textContent = t.name, document.createElement("div"));
-    a.className = "suggestion__type", a.textContent = t.label, r.appendChild(e), r.appendChild(a), r.addEventListener("mousedown", e => {
-      e.preventDefault(), commitSelection(t), hideSuggestions(), validateSearchButton()
-    }), els.termSuggestions.appendChild(r)
+    a.className = "suggestion__type", a.textContent = t.label, r.appendChild(e), r.appendChild(a);
+    let n = e => {
+      e.preventDefault(), commitSelection(t), hideSuggestions()
+    };
+    r.addEventListener("pointerdown", n), r.addEventListener("mousedown", n), els.termSuggestions.appendChild(r)
   }), els.termSuggestions.classList.remove("hidden")) : els.termSuggestions.classList.add("hidden")
 }
 
@@ -348,7 +350,7 @@ function commitSelection(e) {
     type: e.type,
     id: e.id,
     name: e.name
-  }, lastCommittedTermValue = e.name, els.termInput.value = e.name, els.termError.classList.add("hidden"), updateClearButtons()
+  }, lastCommittedTermValue = e.name, els.termInput.value = e.name, els.termError.classList.add("hidden"), updateClearButtons(), validateSearchButton()
 }
 
 function clearSelectionIfUserEdited() {
