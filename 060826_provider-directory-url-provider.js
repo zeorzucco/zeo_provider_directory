@@ -1,11 +1,12 @@
 let CONFIG = {
-    zipLookupUrl: "https://cdn.prod.website-files.com/68348ae3afc011c49c02e2b1/69715127417a25050cdefa0b_fl_zips.txt",
     googleMapsApiKey: "AIzaSyBKchVbGjHCgv54VaEU_FDj3X6ooGHTMVA",
     jotformBaseUrl: "https://form.jotform.com/260184280896364",
-    allowedStates: ["FL"],
+    allowedStates: [],
     resultsPageSize: 20,
     radiusMiles: 20,
-    defaultZoomOnSelect: 15
+    defaultZoomOnSelect: 15,
+    locationCacheKey: "providerDirectory.locationCache.v1",
+    locationCacheTtlMs: 30 * 24 * 60 * 60 * 1e3
   },
   els = {
     termInput: document.getElementById("termInput"),
@@ -35,47 +36,12 @@ let CONFIG = {
     specialties: [],
     providers: []
   },
-  specialtyNameById = {},
-  zipLookup = {},
-  zipLookupLoaded = !1,
-  floridaCitySet = null,
-  floridaCityCentroids = null;
-
-function ensureFloridaCityCentroids() {
-  if (!floridaCityCentroids) {
-    floridaCityCentroids = new Map;
-    var e, t, r, a, o, i, n, l = zipLookup?.z || {},
-      d = "number" == typeof zipLookup?.s ? zipLookup.s : 1e4,
-      s = new Map;
-    for (e of Object.values(l)) !Array.isArray(e) || e.length < 3 || (a = "number" == typeof(a = e[0]) && zipLookup?.c?.[a] || "") && (t = "number" == typeof e[1] ? e[1] / d : null, r = "number" == typeof e[2] ? e[2] / d : null, Number.isFinite(t)) && Number.isFinite(r) && (a = normalizeCity(a), (o = s.get(a) || {
-      sumLat: 0,
-      sumLng: 0,
-      count: 0
-    }).sumLat += t, o.sumLng += r, o.count += 1, s.set(a, o));
-    for ([i, n] of s.entries()) n.count && floridaCityCentroids.set(i, {
-      lat: n.sumLat / n.count,
-      lng: n.sumLng / n.count
-    })
-  }
-}
-
-function ensureFloridaCitySet() {
-  if (!floridaCitySet) {
-    var e;
-    floridaCitySet = new Set;
-    for (e of Array.isArray(zipLookup?.c) ? zipLookup.c : []) {
-      var t = normalizeCity(e);
-      t && floridaCitySet.add(t)
-    }
-  }
-}
-
-function isFloridaCityName(e) {
-  return ensureFloridaCitySet(), !!floridaCitySet && 0 < floridaCitySet.size && floridaCitySet.has(normalizeCity(e))
-}
+  specialtyNameById = {};
 let typeaheadItems = [],
   selectedTerm = null,
   lastCommittedTermValue = "",
+  selectedLocation = null,
+  lastCommittedLocationValue = "",
   filteredProviders = [],
   renderedCount = 0,
   map = null,
@@ -100,12 +66,22 @@ function z_sanitizeLoc(e) {
 }
 
 function z_ctx(e) {
-  var t = z_sanitizeLoc(els?.locInput?.value || "");
+  var t = z_sanitizeLoc(els?.locInput?.value || ""),
+    r = selectedLocation || {};
   return {
     term_name: selectedTerm?.name || "",
     term_type: selectedTerm?.type || "",
     term_id: selectedTerm?.id || "",
     loc_input: t,
+    location_input: t,
+    location_display_name: r.displayName || "",
+    location_city: r.city || "",
+    location_state: r.state || "",
+    location_postal_code: r.postalCode || "",
+    location_country: r.country || "",
+    location_source: r.source || "",
+    location_place_id: r.placeId || "",
+    location_resolved: Number.isFinite(r.lat) && Number.isFinite(r.lng) ? 1 : 0,
     provider_id: e?.ProviderID || "",
     provider_city: e?.City || "",
     provider_state: e?.State || ""
@@ -198,11 +174,6 @@ function iconGlobeSvg() {
   `
 }
 
-function isZip(e) {
-  e = normalizeStr(e);
-  return /^[0-9]{5}(-[0-9]{4})?$/.test(e)
-}
-
 function getUtmParams() {
   var e, t = new URL(window.location.href),
     r = {};
@@ -259,17 +230,7 @@ function boolFromNodes(e) {
   return t, null
 }
 async function loadData() {
-  try {
-    var e = await fetch(CONFIG.zipLookupUrl, {
-      cache: "no-store"
-    });
-    if (!e.ok) throw new Error("ZIP lookup failed");
-    var t = await e.text();
-    zipLookup = JSON.parse(t), zipLookupLoaded = !!(zipLookup && zipLookup.z && zipLookup.c)
-  } catch (e) {
-    zipLookup = {}, zipLookupLoaded = !1
-  }
-  floridaCitySet = null, floridaCityCentroids = null, catalog.procedures = Array.from(document.querySelectorAll(".cms-procedures .w-dyn-item")).map(e => ({
+  catalog.procedures = Array.from(document.querySelectorAll(".cms-procedures .w-dyn-item")).map(e => ({
     id: textFrom(e.querySelector("._wf-proc-id")),
     name: textFrom(e.querySelector("._wf-proc-name")),
     aliases: textFrom(e.querySelector("._wf-proc-aliases")).split(",").map(e => e.trim()).filter(Boolean)
@@ -358,6 +319,11 @@ function clearSelectionIfUserEdited() {
   selectedTerm && e !== lastCommittedTermValue && (selectedTerm = null)
 }
 
+function clearLocationIfUserEdited() {
+  var e = normalizeLocationInput(els.locInput.value);
+  selectedLocation && e !== normalizeLocationInput(lastCommittedLocationValue) && (selectedLocation = null)
+}
+
 function hasLocationInput() {
   return 0 < normalizeStr(els.locInput.value).length
 }
@@ -383,39 +349,117 @@ function showTermErrorIfNeeded() {
   }), els.termError.textContent = "Please select a procedure or specialty from the list."), els.termError.classList.remove("hidden"))
 }
 
-function toTitleCase(e) {
-  return String(e || "").trim().toLowerCase().split(/\s+/).filter(Boolean).map(e => e.charAt(0).toUpperCase() + e.slice(1)).join(" ")
+function normalizeLocationInput(e) {
+  return normalizeStr(e).toLowerCase().replace(/\s+/g, " ")
 }
 
-function resolveFloridaLocation(e) {
-  var t, r, a, o, e = normalizeStr(e);
-  return isZip(e) ? (t = zipLookup?.z?.[e], Array.isArray(t) && !(t.length < 3) && (r = "number" == typeof zipLookup?.s ? zipLookup.s : 1e4, a = "number" == typeof(a = t[0]) && zipLookup?.c?.[a] || "") ? (o = "number" == typeof t[1] ? t[1] / r : null, t = "number" == typeof t[2] ? t[2] / r : null, {
-    mode: "zip",
-    recognized: !0,
-    input: e,
-    city: normalizeCity(a),
-    displayCity: toTitleCase(a),
-    state: "FL",
-    lat: o,
-    lng: t
-  }) : {
-    mode: "zip",
-    recognized: !1,
-    input: e,
-    displayCity: e,
-    state: "FL",
-    lat: null,
-    lng: null
-  }) : (r = toTitleCase(e), a = normalizeCity(e), ensureFloridaCityCentroids(), o = floridaCityCentroids ? floridaCityCentroids.get(a) : null, {
-    mode: "city",
-    recognized: isFloridaCityName(e),
-    input: e,
-    city: a,
-    displayCity: r,
-    state: "FL",
-    lat: o ? o.lat : null,
-    lng: o ? o.lng : null
-  })
+function readLocationCache() {
+  try {
+    var e = JSON.parse(localStorage.getItem(CONFIG.locationCacheKey) || "{}");
+    return e && "object" == typeof e ? e : {}
+  } catch (e) {
+    return {}
+  }
+}
+
+function getCachedLocation(e) {
+  var t = normalizeLocationInput(e),
+    r = readLocationCache()[t];
+  return r && Date.now() - Number(r.cachedAt || 0) <= CONFIG.locationCacheTtlMs && Number.isFinite(r.lat) && Number.isFinite(r.lng) ? {
+    displayName: r.displayName || e,
+    city: r.city || null,
+    state: r.state || null,
+    postalCode: r.postalCode || null,
+    country: "US",
+    lat: r.lat,
+    lng: r.lng,
+    placeId: r.placeId || null,
+    source: "manual-cache"
+  } : null
+}
+
+function setCachedLocation(e, t) {
+  try {
+    var r = normalizeLocationInput(e);
+    if (!r || !t || !Number.isFinite(t.lat) || !Number.isFinite(t.lng)) return;
+    var a = readLocationCache();
+    a[r] = {
+      displayName: t.displayName,
+      city: t.city,
+      state: t.state,
+      postalCode: t.postalCode,
+      country: "US",
+      lat: t.lat,
+      lng: t.lng,
+      placeId: t.placeId,
+      source: t.source,
+      cachedAt: Date.now()
+    }, localStorage.setItem(CONFIG.locationCacheKey, JSON.stringify(a))
+  } catch (e) {
+    console.warn("Provider directory location cache unavailable.", e)
+  }
+}
+
+function addressComponent(e, t, r = !1) {
+  return (e = (e || []).find(e => Array.isArray(e.types) && e.types.includes(t))) ? r ? e.short_name || e.long_name || "" : e.long_name || e.short_name || "" : ""
+}
+
+function stateIsAllowed(e) {
+  var t = (CONFIG.allowedStates || []).map(e => String(e || "").trim().toUpperCase()).filter(Boolean);
+  return !t.length || t.includes(String(e || "").toUpperCase())
+}
+
+function locationFromGoogleResult(e, t) {
+  var r = e?.address_components || [],
+    a = addressComponent(r, "country", !0);
+  if ("US" !== a) return null;
+  var o = e?.geometry?.location,
+    i = "function" == typeof o?.lat ? o.lat() : Number(o?.lat),
+    o = "function" == typeof o?.lng ? o.lng() : Number(o?.lng);
+  if (!Number.isFinite(i) || !Number.isFinite(o)) return null;
+  var n = addressComponent(r, "locality") || addressComponent(r, "postal_town") || addressComponent(r, "sublocality") || addressComponent(r, "administrative_area_level_3"),
+    l = addressComponent(r, "administrative_area_level_1", !0),
+    r = addressComponent(r, "postal_code");
+  return {
+    displayName: e.formatted_address || e.name || [n, l, r].filter(Boolean).join(", "),
+    city: n || null,
+    state: l || null,
+    postalCode: r || null,
+    country: "US",
+    lat: i,
+    lng: o,
+    placeId: e.place_id || null,
+    source: t
+  }
+}
+
+async function geocodeLocation(e) {
+  try {
+    await loadGoogleMaps();
+    if (!window.google?.maps?.Geocoder) return console.warn("Google Geocoder is unavailable."), null;
+    var t = new google.maps.Geocoder;
+    return await new Promise(r => {
+      t.geocode({
+        address: e,
+        componentRestrictions: {
+          country: "US"
+        }
+      }, (e, t) => {
+        if ("OK" !== t || !Array.isArray(e) || !e.length) return console.warn("Google Geocoding could not resolve location.", t), r(null);
+        e = locationFromGoogleResult(e[0], "geocoding"), r(e && stateIsAllowed(e.state) ? e : null)
+      })
+    })
+  } catch (e) {
+    return console.warn("Google Geocoding failed.", e), null
+  }
+}
+
+async function resolveLocation(e) {
+  var t = normalizeStr(e);
+  if (!t) return null;
+  if (selectedLocation && normalizeLocationInput(t) === normalizeLocationInput(lastCommittedLocationValue)) return selectedLocation;
+  if (e = getCachedLocation(t)) return e;
+  return (e = await geocodeLocation(t)) ? (setCachedLocation(t, e), e) : null
 }
 
 function milesBetween(e, t, r, a) {
@@ -426,29 +470,30 @@ function milesBetween(e, t, r, a) {
   return 7917.6 * Math.asin(Math.sqrt(t))
 }
 
-function filterProviders() {
-  let a = hasLocationInput() ? resolveFloridaLocation(normalizeStr(els.locInput.value)) : null;
-  if (a && !a.recognized) return [];
-  let t = new Set((CONFIG.allowedStates || []).map(e => String(e).toUpperCase()));
-  var e = catalog.providers.filter(e => !0 === e.Active && t.has(String(e.State || "").toUpperCase())).filter(e => !!selectedTerm && ("procedure" === selectedTerm.type ? Array.isArray(e.procedure_ids) && e.procedure_ids.includes(selectedTerm.id) : "specialty" === selectedTerm.type && Array.isArray(e.specialty_ids) && e.specialty_ids.includes(selectedTerm.id)));
-  let r = Number(CONFIG.radiusMiles) || 20,
-    o = [];
-  return 0 < (o = a && Number.isFinite(a.lat) && Number.isFinite(a.lng) ? e.map(e => {
-    var t = Number(e.lat),
-      r = Number(e.lng);
-    return Number.isFinite(t) && Number.isFinite(r) ? (t = milesBetween(a.lat, a.lng, t, r), {
-      ...e,
-      _distMiles: t
+function sortProviders(e, t = !1) {
+  return e.sort((e, r) => {
+    var a = e.PreferredProvider ? 1 : 0,
+      o = r.PreferredProvider ? 1 : 0,
+      i = Number(e._distMiles),
+      n = Number(r._distMiles),
+      l = normalizeStr(e.DoctorName),
+      d = normalizeStr(r.DoctorName);
+    return a != o ? o - a : t && Number.isFinite(i) && Number.isFinite(n) && i !== n ? i - n : 0 !== (l = l.localeCompare(d)) ? l : normalizeStr(e.PracticeName).localeCompare(normalizeStr(r.PracticeName))
+  })
+}
+
+function filterProviders(e = null) {
+  let t = new Set((CONFIG.allowedStates || []).map(e => String(e).toUpperCase()).filter(Boolean));
+  var r = catalog.providers.filter(e => !0 === e.Active && (!t.size || t.has(String(e.State || "").toUpperCase()))).filter(e => !!selectedTerm && ("procedure" === selectedTerm.type ? Array.isArray(e.procedure_ids) && e.procedure_ids.includes(selectedTerm.id) : "specialty" === selectedTerm.type && Array.isArray(e.specialty_ids) && e.specialty_ids.includes(selectedTerm.id)));
+  let a = Number(CONFIG.radiusMiles) || 20;
+  return e && Number.isFinite(e.lat) && Number.isFinite(e.lng) ? sortProviders(r.map(t => {
+    var r = Number(t.lat),
+      o = Number(t.lng);
+    return Number.isFinite(r) && Number.isFinite(o) && !(0 === r && 0 === o) ? (r = milesBetween(e.lat, e.lng, r, o), {
+      ...t,
+      _distMiles: r
     }) : null
-  }).filter(Boolean).filter(e => e._distMiles <= r) : o).length ? (o.sort((e, t) => {
-    var r = e.PreferredProvider ? 1 : 0,
-      a = t.PreferredProvider ? 1 : 0;
-    return r != a || (a = Number(e._distMiles), r = Number(t._distMiles), Number.isFinite(a) && Number.isFinite(r) && a !== r) ? a - r : (a = normalizeStr(e.DoctorName), r = normalizeStr(t.DoctorName), 0 !== (a = a.localeCompare(r)) ? a : normalizeStr(e.PracticeName).localeCompare(normalizeStr(t.PracticeName)))
-  }), o) : ((e = e).sort((e, t) => {
-    var r = e.PreferredProvider ? 1 : 0,
-      a = t.PreferredProvider ? 1 : 0;
-    return r != a ? a - r : (a = normalizeStr(e.DoctorName), r = normalizeStr(t.DoctorName), 0 !== (a = a.localeCompare(r)) ? a : normalizeStr(e.PracticeName).localeCompare(normalizeStr(t.PracticeName)))
-  }), e)
+  }).filter(Boolean).filter(e => e._distMiles <= a), !0) : sortProviders(r)
 }
 
 function getProviderSpecialtyLabel(e) {
@@ -558,7 +603,7 @@ function setMapVisibility(e) {
 function loadGoogleMaps() {
   return new Promise((e, t) => {
     var r;
-    window.google && window.google.maps ? e() : (r = document.getElementById("gmaps-script")) ? (r.addEventListener("load", () => e()), r.addEventListener("error", () => t(new Error("Google Maps failed to load")))) : ((r = document.createElement("script")).id = "gmaps-script", r.async = !0, r.defer = !0, r.src = "https://maps.googleapis.com/maps/api/js?key=" + encodeURIComponent(CONFIG.googleMapsApiKey), r.onload = () => e(), r.onerror = () => t(new Error("Google Maps failed to load")), document.head.appendChild(r))
+    window.google && window.google.maps ? e() : (r = document.getElementById("gmaps-script")) ? (r.addEventListener("load", () => e()), r.addEventListener("error", () => t(new Error("Google Maps failed to load")))) : ((r = document.createElement("script")).id = "gmaps-script", r.async = !0, r.defer = !0, r.src = "https://maps.googleapis.com/maps/api/js?key=" + encodeURIComponent(CONFIG.googleMapsApiKey) + "&libraries=places", r.onload = () => e(), r.onerror = () => t(new Error("Google Maps failed to load")), document.head.appendChild(r))
   })
 }
 async function initMapIfNeeded() {
@@ -575,6 +620,26 @@ async function initMapIfNeeded() {
     pixelOffset: new google.maps.Size(0, -12),
     maxWidth: 360
   }))
+}
+
+async function initLocationAutocomplete() {
+  if (els.locInput) try {
+    await loadGoogleMaps();
+    if (!window.google?.maps?.places?.Autocomplete) return console.warn("Google Places Autocomplete is unavailable.");
+    var e = new google.maps.places.Autocomplete(els.locInput, {
+      componentRestrictions: {
+        country: "us"
+      },
+      fields: ["address_components", "formatted_address", "geometry", "name", "place_id", "types"],
+      types: ["(regions)"]
+    });
+    e.addListener("place_changed", () => {
+      var t = locationFromGoogleResult(e.getPlace(), "places");
+      t && stateIsAllowed(t.state) && Number.isFinite(t.lat) && Number.isFinite(t.lng) ? (selectedLocation = t, lastCommittedLocationValue = els.locInput.value || t.displayName, setCachedLocation(lastCommittedLocationValue, t)) : (selectedLocation = null, lastCommittedLocationValue = "", console.warn("Selected Google place could not be used as a US location."))
+    })
+  } catch (e) {
+    console.warn("Google Places Autocomplete failed to initialize.", e)
+  }
 }
 
 function clearMarkers() {
@@ -705,31 +770,36 @@ async function showProviderFromUrl() {
   }, 100)) : setMapVisibility(!1), !0
 }
 async function runSearch() {
-  els.searchMeta.textContent = "", els.searchMeta.classList.add("hidden"), clearSelectionIfUserEdited(), showTermErrorIfNeeded(), validateSearchButton();
+  els.searchMeta.textContent = "", els.searchMeta.classList.add("hidden"), clearSelectionIfUserEdited(), clearLocationIfUserEdited(), showTermErrorIfNeeded(), validateSearchButton();
   let e = ++searchRunId;
   if (activeProviderId = null, pendingFitProviders = null, renderedCount = 0, els.listPane.innerHTML = "", clearMarkers(), selectedTerm) {
-    let t = hasLocationInput() ? resolveFloridaLocation(normalizeStr(els.locInput.value)) : null;
-    filteredProviders = filterProviders(), z_track("directory_search_submit", {
+    let t = hasLocationInput() ? await resolveLocation(normalizeStr(els.locInput.value)) : null;
+    if (hasLocationInput() && !t) return selectedLocation = null, filteredProviders = [], showResultsSection(), setMapVisibility(!1), renderResults(!0), els.searchMeta.classList.remove("hidden"), els.searchMeta.textContent = "We couldn’t recognize that location. Try a city, state, or ZIP code.", z_track("directory_search_submit", {
       ...z_ctx(),
-      loc_mode: t?.mode || "",
-      loc_recognized: t?.recognized ? 1 : 0
+      location_resolved: 0,
+      results_count: 0
+    }), z_track("directory_search_zero_results", {
+      ...z_ctx(),
+      location_resolved: 0,
+      results_count: 0
+    });
+    selectedLocation = t, t && (lastCommittedLocationValue = els.locInput.value || t.displayName), filteredProviders = filterProviders(t), z_track("directory_search_submit", {
+      ...z_ctx(),
+      results_count: filteredProviders.length
     }), z_track("directory_search_results", {
       ...z_ctx(),
-      loc_mode: t?.mode || "",
-      loc_recognized: t?.recognized ? 1 : 0,
       results_count: filteredProviders.length
     }), 0 === filteredProviders.length && z_track("directory_search_zero_results", {
       ...z_ctx(),
-      loc_mode: t?.mode || "",
-      loc_recognized: t?.recognized ? 1 : 0
-    }), showResultsSection(), filteredProviders.length ? (setMapVisibility(!0), await initMapIfNeeded(), t && "zip" === t.mode && t.lat && t.lng && (map.setCenter({
+      results_count: 0
+    }), showResultsSection(), filteredProviders.length ? (setMapVisibility(!0), await initMapIfNeeded(), t && Number.isFinite(t.lat) && Number.isFinite(t.lng) && (map.setCenter({
       lat: t.lat,
       lng: t.lng
     }), map.setZoom(10)), (a = filteredProviders.filter(e => Number.isFinite(e.lat) && Number.isFinite(e.lng) && !(0 === e.lat && 0 === e.lng))).length ? renderMapPins(a) : (setMapVisibility(!1), clearMarkers()), setTimeout(() => {
       searchRunId === e && google.maps.event.trigger(map, "resize")
     }, 100)) : (setMapVisibility(!1), clearMarkers()), renderResults(!0), els.searchMeta.classList.remove("hidden");
-    var r, a = Array.isArray(CONFIG.allowedStates) && 1 === CONFIG.allowedStates.length && "FL" === String(CONFIG.allowedStates[0]).toUpperCase();
-    t ? t.recognized ? (r = "" + t.displayCity, 0 === filteredProviders.length ? els.searchMeta.textContent = `No matches within ${CONFIG.radiusMiles||20} miles of ${r}.` : filteredProviders.some(e => normalizeCity(e.City) === t.city) ? els.searchMeta.textContent = `Searching for: ${selectedTerm.name} within ${CONFIG.radiusMiles||20} miles of ` + r : (a = formatTermForMeta(selectedTerm), els.searchMeta.textContent = `No providers within ${CONFIG.radiusMiles||20} miles of ${r} yet. Showing ${a} in Florida.`)) : "zip" === t.mode ? els.searchMeta.textContent = "ZIP not recognized in Florida yet. Try a Florida city or ZIP." : els.searchMeta.textContent = `Right now this directory is Florida-only. "${t.displayCity}" doesn’t look like a Florida location. Try a Florida city or ZIP.` : els.searchMeta.textContent = 0 === filteredProviders.length ? `No matching ${formatTermForMeta(selectedTerm)} found in Florida yet.` : `Showing ${formatTermForMeta(selectedTerm)} in Florida. Add a city or ZIP to narrow the results.`
+    var r = t?.displayName || normalizeStr(els.locInput.value);
+    els.searchMeta.textContent = t ? 0 === filteredProviders.length ? `No matches within ${CONFIG.radiusMiles||20} miles of ${r}.` : `Searching for: ${selectedTerm.name} within ${CONFIG.radiusMiles||20} miles of ${r}.` : 0 === filteredProviders.length ? `No matching ${formatTermForMeta(selectedTerm)} found yet.` : `Showing ${formatTermForMeta(selectedTerm)}. Add a city or ZIP to narrow the results.`
   }
 }
 
@@ -793,11 +863,11 @@ function wireEvents() {
   }), els.termInput.addEventListener("keydown", e => {
     els.termSuggestions.classList.contains("hidden") || ("ArrowDown" === e.key ? (e.preventDefault(), t = Math.min(t + 1, r.length - 1), showSuggestions(r, t)) : "ArrowUp" === e.key ? (e.preventDefault(), t = Math.max(t - 1, 0), showSuggestions(r, t)) : "Enter" === e.key ? (e.preventDefault(), (0 <= t && r[t] ? (commitSelection(r[t]), hideSuggestions(), validateSearchButton) : showTermErrorIfNeeded)()) : "Escape" === e.key && hideSuggestions())
   }), els.locInput.addEventListener("input", () => {
-    validateSearchButton(), updateClearButtons()
+    clearLocationIfUserEdited(), validateSearchButton(), updateClearButtons()
   }), els.termClearBtn && els.termClearBtn.addEventListener("click", e => {
     e.preventDefault(), e.stopPropagation(), els.termInput.value = "", selectedTerm = null, lastCommittedTermValue = "", els.termError.classList.add("hidden"), hideSuggestions(), validateSearchButton(), updateClearButtons(), els.termInput.focus()
   }), els.locClearBtn && els.locClearBtn.addEventListener("click", e => {
-    e.preventDefault(), e.stopPropagation(), els.locInput.value = "", validateSearchButton(), updateClearButtons(), els.locInput.focus()
+    e.preventDefault(), e.stopPropagation(), els.locInput.value = "", selectedLocation = null, lastCommittedLocationValue = "", validateSearchButton(), updateClearButtons(), els.locInput.focus()
   }), els.searchBtn.addEventListener("click", async () => {
     els.termInput.blur(), els.locInput.blur(), hideSuggestions(), window.matchMedia("(max-width: 768px)").matches && setMobileView("list"), await runSearch()
   }), els.loadMoreBtn.addEventListener("click", () => {
@@ -809,7 +879,7 @@ function wireEvents() {
   })
 }
 async function init() {
-  els.locInput && (els.locInput.placeholder = "City or ZIP (optional)"), await loadData(), wireEvents(), initMobileViewToggle(), validateSearchButton(), updateClearButtons(), await showProviderFromUrl()
+  els.locInput && (els.locInput.placeholder = "City, state, or ZIP (optional)"), await loadData(), wireEvents(), initMobileViewToggle(), initLocationAutocomplete(), validateSearchButton(), updateClearButtons(), await showProviderFromUrl()
 }
 window.Webflow = window.Webflow || [], window.Webflow.push(() => {
   init().catch(e => {
