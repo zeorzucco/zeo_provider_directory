@@ -53,6 +53,60 @@ let typeaheadItems = [],
   searchRunId = 0,
   savedWindowScrollY = 0;
 
+const US_STATE_NAMES = {
+  AL: "Alabama",
+  AK: "Alaska",
+  AZ: "Arizona",
+  AR: "Arkansas",
+  CA: "California",
+  CO: "Colorado",
+  CT: "Connecticut",
+  DE: "Delaware",
+  FL: "Florida",
+  GA: "Georgia",
+  HI: "Hawaii",
+  ID: "Idaho",
+  IL: "Illinois",
+  IN: "Indiana",
+  IA: "Iowa",
+  KS: "Kansas",
+  KY: "Kentucky",
+  LA: "Louisiana",
+  ME: "Maine",
+  MD: "Maryland",
+  MA: "Massachusetts",
+  MI: "Michigan",
+  MN: "Minnesota",
+  MS: "Mississippi",
+  MO: "Missouri",
+  MT: "Montana",
+  NE: "Nebraska",
+  NV: "Nevada",
+  NH: "New Hampshire",
+  NJ: "New Jersey",
+  NM: "New Mexico",
+  NY: "New York",
+  NC: "North Carolina",
+  ND: "North Dakota",
+  OH: "Ohio",
+  OK: "Oklahoma",
+  OR: "Oregon",
+  PA: "Pennsylvania",
+  RI: "Rhode Island",
+  SC: "South Carolina",
+  SD: "South Dakota",
+  TN: "Tennessee",
+  TX: "Texas",
+  UT: "Utah",
+  VT: "Vermont",
+  VA: "Virginia",
+  WA: "Washington",
+  WV: "West Virginia",
+  WI: "Wisconsin",
+  WY: "Wyoming",
+  DC: "District of Columbia"
+};
+
 function z_gaEnabled() {
   return "function" == typeof window.gtag
 }
@@ -353,6 +407,29 @@ function normalizeLocationInput(e) {
   return normalizeStr(e).toLowerCase().replace(/\s+/g, " ")
 }
 
+function stateNameFromCode(e) {
+  return US_STATE_NAMES[String(e || "").trim().toUpperCase()] || ""
+}
+
+function normalizeStateCode(e) {
+  var t = String(e || "").trim();
+  if (!t) return "";
+  t = t.toUpperCase();
+  if (US_STATE_NAMES[t]) return t;
+  var r = normalizeLocationInput(e);
+  for (var [a, o] of Object.entries(US_STATE_NAMES))
+    if (normalizeLocationInput(o) === r) return a;
+  return ""
+}
+
+function isStateWideLocation(e) {
+  if (!e || !normalizeStateCode(e.state)) return !1;
+  if (e.city || e.postalCode) return !1;
+  if (Array.isArray(e.resultTypes) && e.resultTypes.includes("administrative_area_level_1")) return !0;
+  var t = normalizeLocationInput(e.displayName || "");
+  return t === normalizeLocationInput(e.state) || t === normalizeLocationInput(stateNameFromCode(e.state)) || t.startsWith(normalizeLocationInput(stateNameFromCode(e.state)) + ",")
+}
+
 function readLocationCache() {
   try {
     var e = JSON.parse(localStorage.getItem(CONFIG.locationCacheKey) || "{}");
@@ -374,7 +451,8 @@ function getCachedLocation(e) {
     lat: r.lat,
     lng: r.lng,
     placeId: r.placeId || null,
-    source: "manual-cache"
+    source: "manual-cache",
+    resultTypes: Array.isArray(r.resultTypes) ? r.resultTypes : []
   } : null
 }
 
@@ -393,6 +471,7 @@ function setCachedLocation(e, t) {
       lng: t.lng,
       placeId: t.placeId,
       source: t.source,
+      resultTypes: Array.isArray(t.resultTypes) ? t.resultTypes : [],
       cachedAt: Date.now()
     }, localStorage.setItem(CONFIG.locationCacheKey, JSON.stringify(a))
   } catch (e) {
@@ -429,7 +508,8 @@ function locationFromGoogleResult(e, t) {
     lat: i,
     lng: o,
     placeId: e.place_id || null,
-    source: t
+    source: t,
+    resultTypes: Array.isArray(e.types) ? e.types.slice() : []
   }
 }
 
@@ -485,6 +565,10 @@ function sortProviders(e, t = !1) {
 function filterProviders(e = null) {
   let t = new Set((CONFIG.allowedStates || []).map(e => String(e).toUpperCase()).filter(Boolean));
   var r = catalog.providers.filter(e => !0 === e.Active && (!t.size || t.has(String(e.State || "").toUpperCase()))).filter(e => !!selectedTerm && ("procedure" === selectedTerm.type ? Array.isArray(e.procedure_ids) && e.procedure_ids.includes(selectedTerm.id) : "specialty" === selectedTerm.type && Array.isArray(e.specialty_ids) && e.specialty_ids.includes(selectedTerm.id)));
+  if (isStateWideLocation(e)) {
+    var o = normalizeStateCode(e.state);
+    return sortProviders(r.filter(e => normalizeStateCode(e.State) === o))
+  }
   let a = Number(CONFIG.radiusMiles) || 20;
   return e && Number.isFinite(e.lat) && Number.isFinite(e.lng) ? sortProviders(r.map(t => {
     var r = Number(t.lat),
@@ -792,14 +876,17 @@ async function runSearch() {
     }), 0 === filteredProviders.length && z_track("directory_search_zero_results", {
       ...z_ctx(),
       results_count: 0
-    }), showResultsSection(), filteredProviders.length ? (setMapVisibility(!0), await initMapIfNeeded(), t && Number.isFinite(t.lat) && Number.isFinite(t.lng) && (map.setCenter({
+    }), showResultsSection();
+    var o = isStateWideLocation(t),
+      a = [];
+    filteredProviders.length ? (setMapVisibility(!0), await initMapIfNeeded(), !o && t && Number.isFinite(t.lat) && Number.isFinite(t.lng) && (map.setCenter({
       lat: t.lat,
       lng: t.lng
-    }), map.setZoom(10)), (a = filteredProviders.filter(e => Number.isFinite(e.lat) && Number.isFinite(e.lng) && !(0 === e.lat && 0 === e.lng))).length ? renderMapPins(a) : (setMapVisibility(!1), clearMarkers()), setTimeout(() => {
-      searchRunId === e && google.maps.event.trigger(map, "resize")
+    }), map.setZoom(10)), (a = filteredProviders.filter(e => Number.isFinite(e.lat) && Number.isFinite(e.lng) && !(0 === e.lat && 0 === e.lng))).length ? (renderMapPins(a), o && fitMapToProviders(a)) : (setMapVisibility(!1), clearMarkers()), setTimeout(() => {
+      searchRunId === e && (google.maps.event.trigger(map, "resize"), o && fitMapToProviders(a))
     }, 100)) : (setMapVisibility(!1), clearMarkers()), renderResults(!0), els.searchMeta.classList.remove("hidden");
     var r = t?.displayName || normalizeStr(els.locInput.value);
-    els.searchMeta.textContent = t ? 0 === filteredProviders.length ? `No matches within ${CONFIG.radiusMiles||20} miles of ${r}.` : `Searching for: ${selectedTerm.name} within ${CONFIG.radiusMiles||20} miles of ${r}.` : 0 === filteredProviders.length ? `No matching ${formatTermForMeta(selectedTerm)} found yet.` : `Showing ${formatTermForMeta(selectedTerm)}. Add a city or ZIP to narrow the results.`
+    els.searchMeta.textContent = t ? o ? 0 === filteredProviders.length ? `No matching ${formatTermForMeta(selectedTerm)} found in ${stateNameFromCode(t.state)||r}.` : `Searching for: ${selectedTerm.name} in ${stateNameFromCode(t.state)||r}.` : 0 === filteredProviders.length ? `No matches within ${CONFIG.radiusMiles||20} miles of ${r}.` : `Searching for: ${selectedTerm.name} within ${CONFIG.radiusMiles||20} miles of ${r}.` : 0 === filteredProviders.length ? `No matching ${formatTermForMeta(selectedTerm)} found yet.` : `Showing ${formatTermForMeta(selectedTerm)}. Add a city or ZIP to narrow the results.`
   }
 }
 
