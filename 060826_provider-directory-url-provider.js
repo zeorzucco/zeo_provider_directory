@@ -878,12 +878,13 @@ async function runSearch() {
       results_count: 0
     }), showResultsSection();
     var o = isStateWideLocation(t),
+      i = !t || o,
       a = [];
     filteredProviders.length ? (setMapVisibility(!0), await initMapIfNeeded(), !o && t && Number.isFinite(t.lat) && Number.isFinite(t.lng) && (map.setCenter({
       lat: t.lat,
       lng: t.lng
-    }), map.setZoom(10)), (a = filteredProviders.filter(e => Number.isFinite(e.lat) && Number.isFinite(e.lng) && !(0 === e.lat && 0 === e.lng))).length ? (renderMapPins(a), o && fitMapToProviders(a)) : (setMapVisibility(!1), clearMarkers()), setTimeout(() => {
-      searchRunId === e && (google.maps.event.trigger(map, "resize"), o && fitMapToProviders(a))
+    }), map.setZoom(10)), (a = filteredProviders.filter(e => Number.isFinite(e.lat) && Number.isFinite(e.lng) && !(0 === e.lat && 0 === e.lng))).length ? (renderMapPins(a), i && fitMapToProviders(a)) : (setMapVisibility(!1), clearMarkers()), setTimeout(() => {
+      searchRunId === e && (google.maps.event.trigger(map, "resize"), i && fitMapToProviders(a))
     }, 100)) : (setMapVisibility(!1), clearMarkers()), renderResults(!0), els.searchMeta.classList.remove("hidden");
     var r = t?.displayName || normalizeStr(els.locInput.value);
     els.searchMeta.textContent = t ? o ? 0 === filteredProviders.length ? `No matching ${formatTermForMeta(selectedTerm)} found in ${stateNameFromCode(t.state)||r}.` : `Searching for: ${selectedTerm.name} in ${stateNameFromCode(t.state)||r}.` : 0 === filteredProviders.length ? `No matches within ${CONFIG.radiusMiles||20} miles of ${r}.` : `Searching for: ${selectedTerm.name} within ${CONFIG.radiusMiles||20} miles of ${r}.` : 0 === filteredProviders.length ? `No matching ${formatTermForMeta(selectedTerm)} found yet.` : `Showing ${formatTermForMeta(selectedTerm)}. Add a city or ZIP to narrow the results.`
