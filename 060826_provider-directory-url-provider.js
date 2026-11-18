@@ -4,6 +4,8 @@ let CONFIG = {
     allowedStates: [],
     resultsPageSize: 20,
     radiusMiles: 20,
+    expandedRadiusMiles: 50,
+    targetNearbyResults: 3,
     defaultZoomOnSelect: 15,
     locationCacheKey: "providerDirectory.locationCache.v1",
     locationCacheTtlMs: 30 * 24 * 60 * 60 * 1e3
@@ -43,6 +45,7 @@ let typeaheadItems = [],
   selectedLocation = null,
   lastCommittedLocationValue = "",
   filteredProviders = [],
+  expandRadiusBtn = null,
   renderedCount = 0,
   map = null,
   infoWindow = null,
@@ -562,34 +565,68 @@ function sortProviders(e, t = !1) {
   })
 }
 
-function filterProviders(e = null) {
-  let t = new Set((CONFIG.allowedStates || []).map(e => String(e).toUpperCase()).filter(Boolean));
-  var r = catalog.providers.filter(e => !0 === e.Active && (!t.size || t.has(String(e.State || "").toUpperCase()))).filter(e => !!selectedTerm && ("procedure" === selectedTerm.type ? Array.isArray(e.procedure_ids) && e.procedure_ids.includes(selectedTerm.id) : "specialty" === selectedTerm.type && Array.isArray(e.specialty_ids) && e.specialty_ids.includes(selectedTerm.id)));
-  if (isStateWideLocation(e)) {
-    var o = normalizeStateCode(e.state);
-    return sortProviders(r.filter(e => normalizeStateCode(e.State) === o))
+function filterProviders(location, term) {
+  const allowedStates = new Set((CONFIG.allowedStates || []).map(state => String(state).toUpperCase()).filter(Boolean));
+  const matchingProviders = catalog.providers.filter(provider => {
+    if (provider.Active !== true || (allowedStates.size && !allowedStates.has(String(provider.State || "").toUpperCase()))) return false;
+    if (term.type === "procedure") return Array.isArray(provider.procedure_ids) && provider.procedure_ids.includes(term.id);
+    return term.type === "specialty" && Array.isArray(provider.specialty_ids) && provider.specialty_ids.includes(term.id);
+  });
+
+  if (isStateWideLocation(location)) {
+    const state = normalizeStateCode(location.state);
+    return { providers: sortProviders(matchingProviders.filter(provider => normalizeStateCode(provider.State) === state)), remaining: [] };
   }
-  let a = Number(CONFIG.radiusMiles) || 20;
-  return e && Number.isFinite(e.lat) && Number.isFinite(e.lng) ? sortProviders(r.map(t => {
-    var r = Number(t.lat),
-      o = Number(t.lng);
-    return Number.isFinite(r) && Number.isFinite(o) && !(0 === r && 0 === o) ? (r = milesBetween(e.lat, e.lng, r, o), {
-      ...t,
-      _distMiles: r
-    }) : null
-  }).filter(Boolean).filter(e => e._distMiles <= a), !0) : sortProviders(r)
+  if (!location || !Number.isFinite(location.lat) || !Number.isFinite(location.lng)) {
+    return { providers: sortProviders(matchingProviders), remaining: [] };
+  }
+
+  const local = [];
+  const farther = [];
+  for (const provider of matchingProviders) {
+    const lat = Number(provider.lat);
+    const lng = Number(provider.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || (lat === 0 && lng === 0)) continue;
+
+    const distance = milesBetween(location.lat, location.lng, lat, lng);
+    if (distance <= CONFIG.radiusMiles) local.push({ ...provider, _distMiles: distance });
+    else if (distance <= CONFIG.expandedRadiusMiles) farther.push({ ...provider, _distMiles: distance });
+  }
+  sortProviders(local, true);
+  farther.sort((first, second) => first._distMiles - second._distMiles);
+  const additionalCount = Math.max(0, CONFIG.targetNearbyResults - local.length);
+  return { providers: local.concat(farther.slice(0, additionalCount)), remaining: farther.slice(additionalCount) };
 }
 
 function getProviderSpecialtyLabel(e) {
   return selectedTerm && "specialty" === selectedTerm.type ? specialtyNameById[selectedTerm.id] || selectedTerm.name || "" : (e = Array.isArray(e.specialty_ids) ? e.specialty_ids[0] : "") && specialtyNameById[e] || ""
 }
 
-function renderResults(e = !0) {
-  e && (els.listPane.innerHTML = "", renderedCount = 0, activeProviderId = null);
-  var e = filteredProviders.length,
-    t = (els.resultsCount.textContent = 1 === e ? "1 result" : e + " results", els.emptyState.classList.toggle("hidden", 0 !== e), filteredProviders.slice(renderedCount, renderedCount + CONFIG.resultsPageSize)),
-    t = (t.forEach(e => els.listPane.appendChild(createProviderCard(e))), (renderedCount += t.length) < e);
-  els.loadMoreBtn.classList.toggle("hidden", !t)
+function renderResults(reset = true) {
+  if (reset) {
+    els.listPane.innerHTML = "";
+    renderedCount = 0;
+    activeProviderId = null;
+  }
+  const total = filteredProviders.length;
+  els.resultsCount.textContent = total === 1 ? "1 result" : `${total} results`;
+  els.emptyState.classList.toggle("hidden", total !== 0);
+
+  const end = Math.min(renderedCount + CONFIG.resultsPageSize, total);
+  for (; renderedCount < end; renderedCount++) {
+    const provider = filteredProviders[renderedCount];
+    const previous = filteredProviders[renderedCount - 1];
+    if (provider._distMiles > CONFIG.radiusMiles && (!previous || previous._distMiles <= CONFIG.radiusMiles)) {
+      const heading = document.createElement("h3");
+      heading.className = "results__counts";
+      heading.textContent = renderedCount === 0
+        ? `Providers within ${CONFIG.expandedRadiusMiles} miles`
+        : `Additional providers within ${CONFIG.expandedRadiusMiles} miles`;
+      els.listPane.appendChild(heading);
+    }
+    els.listPane.appendChild(createProviderCard(provider));
+  }
+  els.loadMoreBtn.classList.toggle("hidden", renderedCount >= total);
 }
 
 function createProviderCard(t) {
@@ -691,7 +728,10 @@ function loadGoogleMaps() {
   })
 }
 async function initMapIfNeeded() {
-  map || (await loadGoogleMaps(), map = new google.maps.Map(els.mapEl, {
+  if (map) return;
+  await loadGoogleMaps();
+  if (map) return;
+  map = new google.maps.Map(els.mapEl, {
     center: {
       lat: 27.95,
       lng: -82.46
@@ -700,10 +740,11 @@ async function initMapIfNeeded() {
     mapTypeControl: !1,
     fullscreenControl: !1,
     streetViewControl: !1
-  }), infoWindow = new google.maps.InfoWindow({
+  });
+  infoWindow = new google.maps.InfoWindow({
     pixelOffset: new google.maps.Size(0, -12),
     maxWidth: 360
-  }))
+  });
 }
 
 async function initLocationAutocomplete() {
@@ -853,42 +894,112 @@ async function showProviderFromUrl() {
     google.maps.event.trigger(map, "resize"), focusProviderOnMap(r)
   }, 100)) : setMapVisibility(!1), !0
 }
-async function runSearch() {
-  els.searchMeta.textContent = "", els.searchMeta.classList.add("hidden"), clearSelectionIfUserEdited(), clearLocationIfUserEdited(), showTermErrorIfNeeded(), validateSearchButton();
-  let e = ++searchRunId;
-  if (activeProviderId = null, pendingFitProviders = null, renderedCount = 0, els.listPane.innerHTML = "", clearMarkers(), selectedTerm) {
-    let t = hasLocationInput() ? await resolveLocation(normalizeStr(els.locInput.value)) : null;
-    if (hasLocationInput() && !t) return selectedLocation = null, filteredProviders = [], showResultsSection(), setMapVisibility(!1), renderResults(!0), els.searchMeta.classList.remove("hidden"), els.searchMeta.textContent = "We couldn’t recognize that location. Try a city, state, or ZIP code.", z_track("directory_search_submit", {
-      ...z_ctx(),
-      location_resolved: 0,
-      results_count: 0
-    }), z_track("directory_search_zero_results", {
-      ...z_ctx(),
-      location_resolved: 0,
-      results_count: 0
-    });
-    selectedLocation = t, t && (lastCommittedLocationValue = els.locInput.value || t.displayName), filteredProviders = filterProviders(t), z_track("directory_search_submit", {
-      ...z_ctx(),
-      results_count: filteredProviders.length
-    }), z_track("directory_search_results", {
-      ...z_ctx(),
-      results_count: filteredProviders.length
-    }), 0 === filteredProviders.length && z_track("directory_search_zero_results", {
-      ...z_ctx(),
-      results_count: 0
-    }), showResultsSection();
-    var o = isStateWideLocation(t),
-      i = !t || o,
-      a = [];
-    filteredProviders.length ? (setMapVisibility(!0), await initMapIfNeeded(), !o && t && Number.isFinite(t.lat) && Number.isFinite(t.lng) && (map.setCenter({
-      lat: t.lat,
-      lng: t.lng
-    }), map.setZoom(10)), (a = filteredProviders.filter(e => Number.isFinite(e.lat) && Number.isFinite(e.lng) && !(0 === e.lat && 0 === e.lng))).length ? (renderMapPins(a), i && fitMapToProviders(a)) : (setMapVisibility(!1), clearMarkers()), setTimeout(() => {
-      searchRunId === e && (google.maps.event.trigger(map, "resize"), i && fitMapToProviders(a))
-    }, 100)) : (setMapVisibility(!1), clearMarkers()), renderResults(!0), els.searchMeta.classList.remove("hidden");
-    var r = t?.displayName || normalizeStr(els.locInput.value);
-    els.searchMeta.textContent = t ? o ? 0 === filteredProviders.length ? `No matching ${formatTermForMeta(selectedTerm)} found in ${stateNameFromCode(t.state)||r}.` : `Searching for: ${selectedTerm.name} in ${stateNameFromCode(t.state)||r}.` : 0 === filteredProviders.length ? `No matches within ${CONFIG.radiusMiles||20} miles of ${r}.` : `Searching for: ${selectedTerm.name} within ${CONFIG.radiusMiles||20} miles of ${r}.` : 0 === filteredProviders.length ? `No matching ${formatTermForMeta(selectedTerm)} found yet.` : `Showing ${formatTermForMeta(selectedTerm)}. Add a city or ZIP to narrow the results.`
+function getSearchMeta(term, location, locationInput, providers) {
+  if (!location) {
+    if (locationInput) return "We couldn’t recognize that location. Try a city, state, or ZIP code.";
+    return providers.length
+      ? `Showing ${formatTermForMeta(term)}. Add a city or ZIP to narrow the results.`
+      : `No matching ${formatTermForMeta(term)} found yet.`;
   }
+
+  const name = location.displayName || locationInput;
+  if (isStateWideLocation(location)) {
+    const state = stateNameFromCode(location.state) || name;
+    return providers.length ? `Showing ${formatTermForMeta(term)} in ${state}.` : `No matching ${formatTermForMeta(term)} found in ${state}.`;
+  }
+
+  const { radiusMiles, expandedRadiusMiles } = CONFIG;
+  if (!providers.length) return `No matches within ${expandedRadiusMiles} miles of ${name}.`;
+  if (providers[providers.length - 1]._distMiles <= radiusMiles) return `Showing matches within ${radiusMiles} miles of ${name}.`;
+
+  const expanded = providers[0]._distMiles <= radiusMiles
+    ? `Showing matches within ${radiusMiles} miles of ${name} first, followed by additional matches within ${expandedRadiusMiles} miles.`
+    : `No matches within ${radiusMiles} miles of ${name}. Showing matches within ${expandedRadiusMiles} miles.`;
+  return `${expanded} Distances are measured in a straight line.`;
+}
+
+async function renderSearchMap(location, providers, runId) {
+  const pins = providers.filter(provider => Number.isFinite(provider.lat) && Number.isFinite(provider.lng) && !(provider.lat === 0 && provider.lng === 0));
+  if (!pins.length) {
+    pendingFitProviders = null;
+    setMapVisibility(false);
+    clearMarkers();
+    return;
+  }
+
+  setMapVisibility(true);
+  try {
+    await initMapIfNeeded();
+  } catch (error) {
+    if (runId === searchRunId && providers === filteredProviders) setMapVisibility(false);
+    console.warn("Provider map could not be initialized.", error);
+    return;
+  }
+  if (runId !== searchRunId || providers !== filteredProviders) return;
+
+  const localSearch = location && !isStateWideLocation(location) && Number.isFinite(location.lat) && Number.isFinite(location.lng);
+  const expanded = localSearch && providers[providers.length - 1]._distMiles > CONFIG.radiusMiles;
+  const fitPoints = expanded ? [...pins, location] : pins;
+  const fitResults = !localSearch || expanded;
+  renderMapPins(pins);
+  pendingFitProviders = fitPoints;
+  if (fitResults) fitMapToProviders(fitPoints);
+  else {
+    map.setCenter({ lat: location.lat, lng: location.lng });
+    map.setZoom(10);
+  }
+  setTimeout(() => {
+    if (runId !== searchRunId || providers !== filteredProviders) return;
+    google.maps.event.trigger(map, "resize");
+    if (fitResults && !activeProviderId) fitMapToProviders(fitPoints);
+  }, 100);
+}
+
+async function runSearch() {
+  const runId = ++searchRunId;
+  els.searchMeta.textContent = "";
+  els.searchMeta.classList.add("hidden");
+  expandRadiusBtn.classList.add("hidden");
+  expandRadiusBtn.onclick = null;
+  clearSelectionIfUserEdited();
+  clearLocationIfUserEdited();
+  showTermErrorIfNeeded();
+  validateSearchButton();
+
+  const term = selectedTerm;
+  if (!term) return;
+  const locationInput = normalizeStr(els.locInput.value);
+  const location = locationInput ? await resolveLocation(locationInput) : null;
+  if (runId !== searchRunId) return;
+
+  selectedLocation = location;
+  if (location) lastCommittedLocationValue = locationInput || location.displayName;
+  const unknownLocation = locationInput && !location;
+  const { providers, remaining } = unknownLocation ? { providers: [], remaining: [] } : filterProviders(location, term);
+  filteredProviders = providers;
+  const analytics = { ...z_ctx(), results_count: providers.length };
+  z_track("directory_search_submit", analytics);
+  if (!unknownLocation) z_track("directory_search_results", analytics);
+  if (!providers.length) z_track("directory_search_zero_results", analytics);
+
+  showResultsSection();
+  renderResults();
+  els.searchMeta.textContent = getSearchMeta(term, location, locationInput, providers);
+  els.searchMeta.classList.remove("hidden");
+  if (remaining.length) {
+    expandRadiusBtn.classList.remove("hidden");
+    expandRadiusBtn.onclick = async () => {
+      expandRadiusBtn.classList.add("hidden");
+      expandRadiusBtn.onclick = null;
+      filteredProviders = providers.concat(remaining);
+      setActiveCard(null);
+      renderResults(false);
+      els.searchMeta.textContent = getSearchMeta(term, location, locationInput, filteredProviders);
+      els.searchMeta.focus();
+      await renderSearchMap(location, filteredProviders, runId);
+    };
+  }
+  await renderSearchMap(location, providers, runId);
 }
 
 function setMobileView(e) {
@@ -935,6 +1046,15 @@ function nudgeSearchCardForIOS() {
 }
 
 function wireEvents() {
+  expandRadiusBtn = document.createElement("button");
+  expandRadiusBtn.type = "button";
+  expandRadiusBtn.className = els.loadMoreBtn.className;
+  expandRadiusBtn.classList.add("hidden");
+  expandRadiusBtn.style.justifySelf = "start";
+  expandRadiusBtn.textContent = `See all matches within ${CONFIG.expandedRadiusMiles} miles`;
+  els.searchMeta.tabIndex = -1;
+  els.searchMeta.after(expandRadiusBtn);
+
   let t = -1,
     r = [];
   els.termInput.addEventListener("input", () => {
